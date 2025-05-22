@@ -5,6 +5,8 @@ const HDRS := [
 	"X-API-Key: local-dev-only"
 ]
 
+signal post_completed(success, response_data)
+
 @onready var http := HTTPRequest.new()
 
 func _ready() -> void:
@@ -23,44 +25,73 @@ func _on_request_done(result:int, code:int, _hdrs:Array, body:PackedByteArray) -
 # POST after the round ends
 # -------------------------------------------------------------------------
 func send_gather(path: PackedVector2Array, nodes_collected: int) -> void:
+	print("Sidecar: send_gather called. Nodes collected:", nodes_collected) # DEBUG
+
 	# 1.  JSON-friendly path
 	var path_arr: Array = []
 	for p in path:
 		path_arr.append([p.x, p.y])
 
 	# 2.  Body
-	var body := {
-		"agent_id":        17,
-		"zone_id":         3,
-		"path":            path_arr,
+	var body_dict := { # Renamed from 'body' to avoid conflict with response body variable
+		"agent_id":      17,
+		"zone_id":       3,
+		"path":          path_arr,
 		"nodes_collected": nodes_collected
 	}
+	var json_body_string := JSON.stringify(body_dict) # Store stringified body
+
+	print("Sidecar: Preparing to POST. URL:", "%s/submit_gather" % BASE) # DEBUG
+	print("Sidecar: Request body:", json_body_string) # DEBUG
 
 	# 3.  Fire POST with throw-away HTTPRequest
 	var http2 := HTTPRequest.new()
-	http2.pause_mode = Node.PAUSE_MODE_PROCESS
-	add_child(http2)
+	add_child(http2) # Ensure it's in the tree to process signals
 
 	# bind(http2) passes the node as last param so we can free it later
 	http2.request_completed.connect(_on_submit_done.bind(http2), CONNECT_ONE_SHOT)
 
-	http2.request(
+	var error_code = http2.request(
 		"%s/submit_gather" % BASE,
 		HDRS,
 		HTTPClient.METHOD_POST,
-		JSON.stringify(body)
+		json_body_string # Use the stringified body
 	)
-	print("POST body →", JSON.stringify(body))
+
+	if error_code != OK:
+		print("Sidecar: HTTPRequest node failed to send request! Error code: ", error_code) # DEBUG
+	else:
+		print("Sidecar: HTTPRequest sent successfully (pending completion).") # DEBUG
 
 # -------------------------------------------------------------------------
 # Callback for the POST 
 # -------------------------------------------------------------------------
-func _on_submit_done(_result: int, code: int, _hdrs: Array,
-					 body: PackedByteArray, http2: HTTPRequest) -> void:
-	if code == 200:
-		var res: Dictionary = JSON.parse_string(body.get_string_from_utf8())
-		print("POST ok →", res)
-	else:
-		push_error("Submit error %d" % code)
+func _on_submit_done(result: int, code: int, response_hdrs: Array,
+						 body_bytes: PackedByteArray, http2: HTTPRequest) -> void:
+	print("Sidecar: _on_submit_done called.")
+	print("Sidecar: Result enum (0=OK):", result, ", HTTP Code:", code)
+	var response_body_string := body_bytes.get_string_from_utf8()
+	print("Sidecar: Response Body:", response_body_string)
 
-	http2.queue_free()   # clean up the temporary request node
+	var success_flag := false
+	var parsed_data := {}
+
+	if code == 200 and result == HTTPRequest.RESULT_SUCCESS:
+		var res: Dictionary = JSON.parse_string(response_body_string) as Dictionary
+		if res:
+			print("Sidecar: POST ok →", res)
+			parsed_data = res
+			success_flag = true
+		else:
+			print("Sidecar: POST ok, but failed to parse JSON response:", response_body_string)
+	else:
+		push_error("Sidecar: Submit error! HTTP Code: %d, Result: %d" % [code, result])
+		push_error("Sidecar: Response: " + response_body_string)
+
+	post_completed.emit(success_flag, parsed_data) # Emit the signal
+
+	if is_instance_valid(http2):
+		http2.queue_free()
+		print("Sidecar: http2 node queued for freeing.")
+	else:
+		print("Sidecar: http2 node was already invalid before queue_free.")

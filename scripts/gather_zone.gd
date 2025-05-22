@@ -9,7 +9,7 @@ extends Node2D
 const RES_NODE := preload("res://scenes/ResourceNode.tscn")
 
 var total_nodes: int = 0
-var time_left := 45.0
+var time_left := 15.0
 var weights := {1:0.42, 2:0.21, 3:0.17, 5:0.08, 6:0.06, 7:0.04, 8:0.02}
 var _busy: bool = false
 
@@ -128,12 +128,23 @@ func _on_gather_cancelled() -> void:
 
 # === round end ===
 func _finish_round() -> void:
-	set_process(false)             # stop the timer
-	player.set_process(false)      # optional: freeze player entirely
+	print("GatherZone: _finish_round called. Time left:", time_left)
+	set_process(false)
+	player.set_process(false)
 	marker.visible = false
-	# 1. POST results back to Python
 	var path: PackedVector2Array = player.take_click_path()
-	Sidecar.send_gather(path, hud.score)
+	print("GatherZone: Calling Sidecar.send_gather with path size:", path.size(), "and score:", hud.score)
 
-	# 2. show result popup
-	round_end.show_results(hud.score)
+	# Connect to Sidecar's new signal (assuming Sidecar is an autoload)
+	Sidecar.post_completed.connect(_on_sidecar_post_completed, CONNECT_ONE_SHOT)
+	Sidecar.send_gather(path, hud.score)
+	# DO NOT call round_end.show_results here anymore
+	print("GatherZone: Waiting for Sidecar post to complete...")
+
+func _on_sidecar_post_completed(success: bool, response_data: Dictionary) -> void:
+	print("GatherZone: Sidecar post completed. Success:", success, "Data:", response_data)
+	# Now it's safe to show the results
+	if round_end and is_instance_valid(round_end): # Check if round_end is valid
+		round_end.show_results(hud.score)
+	else:
+		push_error("GatherZone: round_end node is not valid!")
